@@ -28,7 +28,7 @@ ssize_t tracking_read(FILE *file, void *buf, ssize_t size) {
 int main() {
     inject_write(tracking_write);
     inject_read(tracking_read);
-    int fd = open("a", O_WRONLY | O_CREAT, 0644);
+    int fd = open("a", O_WRONLY | O_CREAT | O_TRUNC, 0644);
     FILE *file = fdopen_injected(fd, "w");
     fprintf(file, "s");
     fflush(file);
