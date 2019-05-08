@@ -8,19 +8,34 @@
 #include <unistd.h>
 
 void print_buf(const char *buf, size_t size) {
+  struct ctrl {
+    char c;
+    char buf[3];
+  } ctrls[] = {{'\t', "\\t"},
+               {'\f', "\\f"},
+               {'\v', "\\v"},
+               {'\n', "\\n"},
+               {'\r', "\\r"}};
   if (size >= 0) {
     for (size_t i = 0; i < size; ++i) {
-      if (isalnum(buf[i]))
+      if (isprint(buf[i])) {
         write(STDERR_FILENO, (const char *)buf + i, 1);
-      else if (((const char *)buf)[i] == '\n')
-        write(STDERR_FILENO, "\\n", 2);
-      else {
-        write(STDERR_FILENO, "\\x", 2);
-        char c = ((const char *)buf)[i];
-        static const char list[] = {'0', '1', '2', '3', '4', '5', '6', '7',
-                                    '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'};
-        char out[] = {list[c / 16], list[c % 16]};
-        write(STDERR_FILENO, out, 2);
+      } else {
+        ctrl* b = std::begin(ctrls);
+        for (; b != std::end(ctrls); ++b) {
+          if (b->c == buf[i]) {
+            write(STDERR_FILENO, b->buf, 2);
+            break;
+          }
+        }
+        if (b == std::end(ctrls)) {
+          write(STDERR_FILENO, "\\x", 2);
+          char c = ((const char *)buf)[i];
+          static const char list[] = {'0', '1', '2', '3', '4', '5', '6', '7',
+                                      '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'};
+          char out[] = {list[c / 16], list[c % 16]};
+          write(STDERR_FILENO, out, 2);
+        }
       }
     }
   }
@@ -41,12 +56,13 @@ ssize_t tracking_write(int fd, const void *buf, size_t size) {
 ssize_t tracking_read(int fd, void *buf, size_t size) {
   ssize_t ret = read(fd, buf, size);
   char buf1[std::max(size + 50, (size_t)1024)];
-  int n = sprintf(buf1, "read(%d, 0x%lx, %ld) = %d", fd, (unsigned long)buf, size,
-                  ret);
+  int n = sprintf(buf1, "read(%d, 0x%lx, %ld) = %d", fd, (unsigned long)buf,
+                  size, ret);
   write(STDERR_FILENO, buf1, n);
   if (ret > 0) {
-    write(STDERR_FILENO, " => ", 4);
+    write(STDERR_FILENO, " => \"", 5);
     print_buf((const char *)buf, ret);
+    write(STDERR_FILENO, "\"", 1);
   }
   write(STDERR_FILENO, "\n", 1);
   return ret;
@@ -88,9 +104,9 @@ int main() {
 
   int fd = open("a", O_WRONLY | O_CREAT | O_TRUNC, 0644);
   FILE *file = fdopen_injected(fd, "w");
-  fprintf(file, "s");
+  fprintf(file, "s ");
   fflush(file);
-  fprintf(file, "s");
+  fprintf(file, "s ");
   fclose(file);
   FILE *file1 = fopen_injected("a", "r");
   char buf[100];
