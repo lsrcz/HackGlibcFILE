@@ -68,13 +68,17 @@ void inject_stat(_IO_stat_t func);
 
 #else
 
-typedef int (*_IO_close_t)(void *cookie);
+typedef int (*_IO_close_t)(int fd);
 
-typedef int (*_IO_read_t)(void *cookie, char *buf, int size);
+typedef ssize_t (*_IO_read_t)(int fd, void *buf, size_t size);
 
-typedef fpos_t (*_IO_seek_t)(void *cookie, fpos_t offset, int whence);
+typedef fpos_t (*_IO_seek_t)(int fd, fpos_t offset, int whence);
 
-typedef int (*_IO_write_t)(void *cookie, const char *buf, int size);
+typedef ssize_t (*_IO_write_t)(int fd, const void *buf, size_t size);
+
+typedef int (*_IO_open_t)(const char *buf, int oflag, ...);
+
+typedef int (*_IO_fcntl_t)(int fd, int flag, ...);
 
 #endif
 
@@ -85,6 +89,10 @@ void inject_write(_IO_write_t func);
 void inject_seek(_IO_seek_t func);
 
 void inject_close(_IO_close_t func);
+
+void inject_open(_IO_open_t func);
+
+void inject_fcntl(_IO_fcntl_t func);
 
 FILE *fopen_injected(const char *filename, const char *mode);
 
