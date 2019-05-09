@@ -67,35 +67,35 @@ void inject_stat(_IO_stat_t func);
 
 #else
 
-typedef int (*_IO_close_t)(int fd);
+typedef int (*_unix_close_t)(int fd);
 
-typedef ssize_t (*_IO_read_t)(int fd, void *buf, size_t size);
+typedef ssize_t (*_unix_read_t)(int fd, void *buf, size_t size);
 
-typedef fpos_t (*_IO_seek_t)(int fd, fpos_t offset, int whence);
+typedef fpos_t (*_unix_seek_t)(int fd, fpos_t offset, int whence);
 
-typedef ssize_t (*_IO_write_t)(int fd, const void *buf, size_t size);
+typedef ssize_t (*_unix_write_t)(int fd, const void *buf, size_t size);
 
-typedef int (*_IO_open_t)(const char *buf, int oflag, ...);
+typedef int (*_unix_open_t)(const char *buf, int oflag, ...);
 
-typedef int (*_IO_fcntl_t)(int fd, int flag, ...);
+typedef int (*_unix_fcntl_t)(int fd, int flag, ...);
 
-typedef int (*_IO_dup2_t)(int fd1, int fd2);
+typedef int (*_unix_dup2_t)(int fd1, int fd2);
 
 #endif
 
-void inject_read(_IO_read_t func);
+void inject_read(_unix_read_t func);
 
-void inject_write(_IO_write_t func);
+void inject_write(_unix_write_t func);
 
-void inject_seek(_IO_seek_t func);
+void inject_seek(_unix_seek_t func);
 
-void inject_close(_IO_close_t func);
+void inject_close(_unix_close_t func);
 
-void inject_open(_IO_open_t func);
+void inject_open(_unix_open_t func);
 
-void inject_fcntl(_IO_fcntl_t func);
+void inject_fcntl(_unix_fcntl_t func);
 
-void inject_dup2(_IO_dup2_t func);
+void inject_dup2(_unix_dup2_t func);
 
 FILE *fopen_injected(const char *filename, const char *mode);
 

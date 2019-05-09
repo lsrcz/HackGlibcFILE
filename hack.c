@@ -1,41 +1,41 @@
 #include "hack.h"
 #include <unistd.h>
 #include <fcntl.h>
-static _IO_read_t _saved_read = read;
+static _unix_read_t _saved_read = read;
 
-static _IO_seek_t _saved_seek = lseek;
+static _unix_seek_t _saved_seek = lseek;
 
-static _IO_close_t _saved_close = close;
+static _unix_close_t _saved_close = close;
 
-static _IO_write_t _saved_write = write;
+static _unix_write_t _saved_write = write;
 
-static _IO_open_t _saved_open = open;
+static _unix_open_t _saved_open = open;
 
-static _IO_fcntl_t _saved_fcntl = fcntl;
+static _unix_fcntl_t _saved_fcntl = fcntl;
 
-static _IO_dup2_t _saved_dup2 = dup2;
+static _unix_dup2_t _saved_dup2 = dup2;
 
-void inject_read(_IO_read_t func) {
+void inject_read(_unix_read_t func) {
   _saved_read = func;
 }
 
-void inject_write(_IO_write_t func) {
+void inject_write(_unix_write_t func) {
   _saved_write = func;
 }
 
-void inject_seek(_IO_seek_t func) {
+void inject_seek(_unix_seek_t func) {
   _saved_seek = func;
 }
 
-void inject_close(_IO_close_t func) {
+void inject_close(_unix_close_t func) {
   _saved_close = func;
 }
 
-void inject_open(_IO_open_t func) { _saved_open = func; }
+void inject_open(_unix_open_t func) { _saved_open = func; }
 
-void inject_fcntl(_IO_fcntl_t func) { _saved_fcntl = func; }
+void inject_fcntl(_unix_fcntl_t func) { _saved_fcntl = func; }
 
-void inject_dup2(_IO_dup2_t func) { _saved_dup2 = func; }
+void inject_dup2(_unix_dup2_t func) { _saved_dup2 = func; }
 
 #ifndef __APPLE__
 #define _IO_MTSAFE_IO
