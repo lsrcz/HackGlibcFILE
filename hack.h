@@ -24,13 +24,11 @@ typedef int (*_IO_underflow_t)(FILE *);
 
 typedef int (*_IO_pbackfail_t)(FILE *, int);
 
-typedef size_t (*_IO_xsputn_t)(FILE *FP, const void *DATA,
-                               size_t N);
+typedef size_t (*_IO_xsputn_t)(FILE *FP, const void *DATA, size_t N);
 
 typedef size_t (*_IO_xsgetn_t)(FILE *FP, void *DATA, size_t N);
 
-typedef off64_t (*_IO_seekoff_t)(FILE *FP, off64_t OFF, int DIR,
-                                 int MODE);
+typedef off64_t (*_IO_seekoff_t)(FILE *FP, off64_t OFF, int DIR, int MODE);
 
 typedef off64_t (*_IO_seekpos_t)(FILE *, off64_t, int);
 
@@ -80,6 +78,8 @@ typedef int (*_IO_open_t)(const char *buf, int oflag, ...);
 
 typedef int (*_IO_fcntl_t)(int fd, int flag, ...);
 
+typedef int (*_IO_dup2_t)(int fd1, int fd2);
+
 #endif
 
 void inject_read(_IO_read_t func);
@@ -94,12 +94,17 @@ void inject_open(_IO_open_t func);
 
 void inject_fcntl(_IO_fcntl_t func);
 
+void inject_dup2(_IO_dup2_t func);
+
 FILE *fopen_injected(const char *filename, const char *mode);
 
 FILE *fdopen_injected(int fd, const char *mode);
+
+FILE *freopen_injected(const char *__restrict file, const char *__restrict mode,
+                       FILE *fp);
 
 #ifdef __cplusplus
 };
 #endif
 
-#endif //HACKGLIBCFILE_HACK_H
+#endif // HACKGLIBCFILE_HACK_H

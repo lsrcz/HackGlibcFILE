@@ -96,11 +96,20 @@ int tracking_open(const char *buf, int mode, ...) {
   return ret;
 }
 
+int tracking_dup2(int fd1, int fd2) {
+  int ret = dup2(fd1, fd2);
+  char buf1[50];
+  int n = sprintf(buf1, "dup(%d, %d) = %d\n", fd1, fd2, ret);
+  write(STDERR_FILENO, buf1, n);
+  return ret;
+}
+
 int main() {
   inject_write(tracking_write);
   inject_read(tracking_read);
   inject_close(tracking_close);
   inject_open(tracking_open);
+  inject_dup2(tracking_dup2);
 
   int fd = open("a", O_WRONLY | O_CREAT | O_TRUNC, 0644);
   FILE *file = fdopen_injected(fd, "w");
@@ -113,5 +122,21 @@ int main() {
   fscanf(file1, "%s", buf);
   fscanf(file1, "%s", buf);
   fclose(file1);
+
+  fprintf(stdout, "a");
+  fprintf(stdout, "b");
+  fprintf(stderr, "a");
+  fprintf(stderr, "b");
+
+  freopen_injected("a", "w", stdout);
+  printf("123456");
+  fflush(stdout);
+
+  freopen_injected("a", "r", stdin);
+  int a;
+  scanf("%d", &a);
+  fprintf(stderr, "%d\n", a);
+
   return 0;
 }
+

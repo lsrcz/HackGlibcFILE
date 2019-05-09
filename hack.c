@@ -555,17 +555,15 @@ static _IO_open_t _saved_open = open;
 
 static _IO_fcntl_t _saved_fcntl = fcntl;
 
-void inject_read(_IO_read_t func) { _saved_read = func; }
+static _IO_dup2_t _saved_dup2 = dup2;
 
-void inject_write(_IO_write_t func) { _saved_write = func; }
+FILE *_stdfiles[3];
 
-void inject_seek(_IO_seek_t func) { _saved_seek = func; }
-
-void inject_close(_IO_close_t func) { _saved_close = func; }
-
-void inject_open(_IO_open_t func) { _saved_open = func; }
-
-void inject_fcntl(_IO_fcntl_t func) { _saved_fcntl = func; }
+void __attribute__((constructor)) _initstdfile() {
+  _stdfiles[0] = stdin;
+  _stdfiles[1] = stdout;
+  _stdfiles[2] = stderr;
+}
 
 int _read_vfunc(void *cookie, char *buf, int n) {
   FILE *fp = cookie;
@@ -584,166 +582,41 @@ fpos_t _seek_vfunc(void *cookie, fpos_t offset, int whence) {
 
 int _close_vfunc(void *cookie) { return _saved_close(((FILE *)cookie)->_file); }
 
+void inject_read(_IO_read_t func) {
+  _saved_read = func;
+  for (int i = 0; i < 3; ++i)
+    _stdfiles[i]->_read = _read_vfunc;
+}
+
+void inject_write(_IO_write_t func) {
+  _saved_write = func;
+  for (int i = 0; i < 3; ++i)
+    _stdfiles[i]->_write = _write_vfunc;
+}
+
+void inject_seek(_IO_seek_t func) {
+  _saved_seek = func;
+  for (int i = 0; i < 3; ++i)
+    _stdfiles[i]->_seek = _seek_vfunc;
+}
+
+void inject_close(_IO_close_t func) {
+  _saved_close = func;
+  for (int i = 0; i < 3; ++i)
+    _stdfiles[i]->_close = _close_vfunc;
+}
+
+void inject_open(_IO_open_t func) { _saved_open = func; }
+
+void inject_fcntl(_IO_fcntl_t func) { _saved_fcntl = func; }
+
+void inject_dup2(_IO_dup2_t func) { _saved_dup2 = func; }
+
 extern int __sflags(const char *, int *);
-extern FILE *__sfp(int);
-#define _counted _extra->counted
 
-/* hold a buncha junk that would grow the ABI */
-struct __sFILEX {
-  unsigned char *up;        /* saved _p when _p is doing ungetc data */
-  pthread_mutex_t fl_mutex; /* used for MT-safety */
-  int orientation : 2;      /* orientation for fwide() */
-  int counted : 1;          /* stream counted against STREAM_MAX */
-  mbstate_t mbstate;        /* multibyte conversion state */
-};
-
-static int __scounted = 3;
-static pthread_mutex_t filelist_lock = PTHREAD_MUTEX_INITIALIZER;
-#define FILELIST_LOCK()                                                        \
-  do {                                                                         \
-    pthread_mutex_lock(&filelist_lock);                                        \
-  } while (0)
-#define FILELIST_UNLOCK()                                                      \
-  do {                                                                         \
-    pthread_mutex_unlock(&filelist_lock);                                      \
-  } while (0)
-
-extern void __sinit(void);
-extern pthread_once_t __sdidinit;
-
-static int __stream_max;
-struct glue {
-  struct glue *next;
-  int niobs;
-  FILE *iobs;
-};
-static FILE usual[FOPEN_MAX - 3];
-static struct glue uglue = {NULL, FOPEN_MAX - 3, usual};
-extern struct glue __sglue;
-// assume f_prealloc is never called
-static struct glue *lastglue = &uglue;
-
-#define INITEXTRA(fp)                                                          \
-  do {                                                                         \
-    (fp)->_extra->up = NULL;                                                   \
-    (fp)->_extra->fl_mutex =                                                   \
-        (pthread_mutex_t)PTHREAD_RECURSIVE_MUTEX_INITIALIZER;                  \
-    (fp)->_extra->orientation = 0;                                             \
-    memset(&(fp)->_extra->mbstate, 0, sizeof(mbstate_t));                      \
-    (fp)->_extra->counted = 0;                                                 \
-  } while (0);
-
-static struct glue *moreglue(int n) {
-  struct glue *g;
-  FILE *p;
-  struct __sFILEX *fx;
-  size_t align;
-
-  align = __alignof__((struct {
-    FILE f;
-    struct __sFILEX s;
-  }){});
-  g = (struct glue *)malloc(sizeof(*g) + align + n * sizeof(FILE) +
-                            n * sizeof(struct __sFILEX));
-  if (g == NULL)
-    return (NULL);
-  p = (FILE *)roundup((uintptr_t)(g + 1), align);
-  fx = (struct __sFILEX *)&p[n];
-  g->next = NULL;
-  g->niobs = n;
-  g->iobs = p;
-
-  while (--n >= 0) {
-    bzero(p, sizeof(*p));
-    p->_extra = fx;
-    INITEXTRA(p);
-    p++, fx++;
-  }
-  return (g);
-}
-
-#define NDYNAMIC 10
-
-/*
- * Find a free FILE for fopen et al.
- */
-FILE *__sfp(int count) {
-  FILE *fp;
-  int n;
-  struct glue *g;
-
-  pthread_once(&__sdidinit, __sinit);
-
-  if (count) {
-    int32_t new = OSAtomicIncrement32(&__scounted);
-    __stream_max = sysconf(_SC_STREAM_MAX);
-    if (new > __stream_max) {
-      if (new > (__stream_max = sysconf(_SC_STREAM_MAX))) {
-        OSAtomicDecrement32(&__scounted);
-        errno = EMFILE;
-        return NULL;
-      }
-    }
-  }
-  /*
-   * The list must be locked because a FILE may be updated.
-   */
-  FILELIST_LOCK();
-  for (g = &__sglue; g != NULL; g = g->next) {
-    for (fp = g->iobs, n = g->niobs; --n >= 0; fp++)
-      if (fp->_flags == 0)
-        goto found;
-  }
-  FILELIST_UNLOCK(); /* don't hold lock while malloc()ing. */
-  if ((g = moreglue(NDYNAMIC)) == NULL)
-    return (NULL);
-  FILELIST_LOCK();    /* reacquire the lock */
-  lastglue->next = g; /* atomically append glue to list */
-  lastglue = g;       /* not atomic; only accessed when locked */
-  fp = g->iobs;
-found:
-  fp->_flags = 1; /* reserve this slot; caller sets real flags */
-  FILELIST_UNLOCK();
-
-  /* _flags = 1 means the FILE* is in use, and this thread owns the object while
-   * it is being initialized */
-  fp->_p = NULL; /* no current pointer */
-  fp->_w = 0;    /* nothing to read or write */
-  fp->_r = 0;
-  fp->_bf._base = NULL; /* no buffer */
-  fp->_bf._size = 0;
-  fp->_lbfsize = 0;             /* not line buffered */
-  fp->_file = -1;               /* no file */
-  /*	fp->_cookie = <any>; */ /* caller sets cookie, _read/_write etc */
-  fp->_ub._base = NULL;         /* no ungetc buffer */
-  fp->_ub._size = 0;
-  fp->_lb._base = NULL; /* no line buffer */
-  fp->_lb._size = 0;
-  /*	fp->_lock = NULL; */ /* once set always set (reused) */
-  INITEXTRA(fp);
-  fp->_extra->counted = count ? 1 : 0;
-  return (fp);
-}
-
-static void __sfprelease(FILE *fp) {
-  if (fp->_counted) {
-    OSAtomicDecrement32(&__scounted);
-    fp->_counted = 0;
-  }
-
-  pthread_mutex_destroy(&fp->_extra->fl_mutex);
-
-  /* Make sure nobody else is enumerating the list while we clear the "in use"
-   * _flags field. */
-  FILELIST_LOCK();
-  fp->_flags = 0;
-  FILELIST_UNLOCK();
-}
 extern int _sread(FILE *, char *, int);
 extern int _swrite(FILE *, const char *, int);
 extern int _sseek(FILE *, fpos_t, int);
-
-#define COUNT 1
 
 FILE *fopen_injected(const char *filename, const char *mode) {
   FILE *fp;
@@ -752,10 +625,7 @@ FILE *fopen_injected(const char *filename, const char *mode) {
 
   if ((flags = __sflags(mode, &oflags)) == 0)
     return (NULL);
-  if ((fp = __sfp(COUNT)) == NULL)
-    return (NULL);
   if ((f = _saved_open(filename, oflags, DEFFILEMODE)) < 0) {
-    __sfprelease(fp); /* release */
     return (NULL);
   }
   /*
@@ -766,18 +636,14 @@ FILE *fopen_injected(const char *filename, const char *mode) {
    * open.
    */
   if (f > SHRT_MAX) {
-    fp->_flags = 0; /* release */
     _saved_close(f);
     errno = EMFILE;
     return (NULL);
   }
+  fp = funopen(NULL, _read_vfunc, _write_vfunc, _seek_vfunc, _close_vfunc);
   fp->_file = f;
   fp->_flags = flags;
   fp->_cookie = fp;
-  fp->_read = _read_vfunc;
-  fp->_write = _write_vfunc;
-  fp->_seek = _seek_vfunc;
-  fp->_close = _close_vfunc;
   /*
    * When opening in append mode, even though we use O_APPEND,
    * we need to seek to the end so that ftell() gets the right
@@ -795,13 +661,6 @@ FILE *fdopen_injected(int fd, const char *mode) {
   FILE *fp;
   int flags, oflags, fdflags, tmp;
 
-  /*
-   * File descriptors are a full int, but _file is only a short.
-   * If we get a valid file descriptor that is greater than
-   * SHRT_MAX, then the fd will get sign-extended into an
-   * invalid file descriptor.  Handle this case by failing the
-   * open.
-   */
   if (fd > SHRT_MAX) {
     errno = EMFILE;
     return (NULL);
@@ -810,7 +669,6 @@ FILE *fdopen_injected(int fd, const char *mode) {
   if ((flags = __sflags(mode, &oflags)) == 0)
     return (NULL);
 
-  /* Make sure the mode the user wants is a subset of the actual mode. */
   if ((fdflags = _saved_fcntl(fd, F_GETFL, 0)) < 0)
     return (NULL);
   tmp = fdflags & O_ACCMODE;
@@ -819,22 +677,255 @@ FILE *fdopen_injected(int fd, const char *mode) {
     return (NULL);
   }
 
-  if ((fp = __sfp(COUNT)) == NULL)
+  if ((fp = funopen(NULL, _read_vfunc, _write_vfunc, _seek_vfunc,
+                    _close_vfunc)) == NULL)
     return (NULL);
   fp->_flags = flags;
-  /*
-   * If opened for appending, but underlying descriptor does not have
-   * O_APPEND bit set, assert __SAPP so that __swrite() caller
-   * will _sseek() to the end before write.
-   */
   if ((oflags & O_APPEND) && !(fdflags & O_APPEND))
     fp->_flags |= __SAPP;
   fp->_file = fd;
+  fp->_cookie = fp;
+  return (fp);
+}
+
+extern pthread_once_t __sdidinit;
+extern void __sinit(void);
+#define FLOCKFILE(fp) flockfile(fp)
+#define FUNLOCKFILE funlockfile(fp);
+extern int __sflush(FILE *fp);
+
+/* hold a buncha junk that would grow the ABI */
+struct __sFILEX {
+  unsigned char *up;        /* saved _p when _p is doing ungetc data */
+  pthread_mutex_t fl_mutex; /* used for MT-safety */
+  int orientation : 2;      /* orientation for fwide() */
+  int counted : 1;          /* stream counted against STREAM_MAX */
+  mbstate_t mbstate;        /* multibyte conversion state */
+};
+
+#define _up _extra->up
+#define _fl_mutex _extra->fl_mutex
+#define _orientation _extra->orientation
+#define _mbstate _extra->mbstate
+#define _counted _extra->counted
+/*
+ * Test whether the given stdio file has an active ungetc buffer;
+ * release such a buffer, without restoring ordinary unread data.
+ */
+#define HASUB(fp) ((fp)->_ub._base != NULL)
+#define FREEUB(fp)                                                             \
+  {                                                                            \
+    if ((fp)->_ub._base != (fp)->_ubuf)                                        \
+      free((char *)(fp)->_ub._base);                                           \
+    (fp)->_ub._base = NULL;                                                    \
+  }
+
+/*
+ * test for an fgetln() buffer.
+ */
+#define HASLB(fp) ((fp)->_lb._base != NULL)
+#define FREELB(fp)                                                             \
+  {                                                                            \
+    free((char *)(fp)->_lb._base);                                             \
+    (fp)->_lb._base = NULL;                                                    \
+  }
+
+/*
+ * Re-direct an existing, open (probably) file to some other file.
+ * ANSI is written such that the original file gets closed if at
+ * all possible, no matter what.
+ */
+FILE *freopen_injected(const char *__restrict file, const char *__restrict mode,
+                       FILE *fp) {
+  int f;
+  int dflags, flags, oflags, sverrno, wantfd;
+
+  if ((flags = __sflags(mode, &oflags)) == 0) {
+    sverrno = errno;
+    (void)fclose(fp);
+    errno = sverrno;
+    return (NULL);
+  }
+
+  pthread_once(&__sdidinit, __sinit);
+
+  FLOCKFILE(fp);
+
+  /*
+   * If the filename is a NULL pointer, the caller is asking us to
+   * re-open the same file with a different mode. We allow this only
+   * if the modes are compatible.
+   */
+  if (file == NULL) {
+    /* See comment below regarding freopen() of closed files. */
+    if (fp->_flags == 0) {
+      FUNLOCKFILE(fp);
+      errno = EINVAL;
+      return (NULL);
+    }
+    if ((dflags = _saved_fcntl(fp->_file, F_GETFL)) < 0) {
+      sverrno = errno;
+      fclose(fp);
+      FUNLOCKFILE(fp);
+      errno = sverrno;
+      return (NULL);
+    }
+    if ((dflags & O_ACCMODE) != O_RDWR &&
+        (dflags & O_ACCMODE) != (oflags & O_ACCMODE)) {
+      fclose(fp);
+      FUNLOCKFILE(fp);
+      errno = EBADF;
+      return (NULL);
+    }
+    if (fp->_flags & __SWR)
+      (void)__sflush(fp);
+    if ((oflags ^ dflags) & O_APPEND) {
+      dflags &= ~O_APPEND;
+      dflags |= oflags & O_APPEND;
+      if (_saved_fcntl(fp->_file, F_SETFL, dflags) < 0) {
+        sverrno = errno;
+        fclose(fp);
+        FUNLOCKFILE(fp);
+        errno = sverrno;
+        return (NULL);
+      }
+    }
+    if (oflags & O_TRUNC)
+      (void)ftruncate(fp->_file, (off_t)0);
+    if (!(oflags & O_APPEND))
+      (void)_sseek(fp, (fpos_t)0, SEEK_SET);
+    f = fp->_file;
+  } else {
+    int isopen;
+
+    /*
+     * There are actually programs that depend on being able to "freopen"
+     * descriptors that weren't originally open.  Keep this from breaking.
+     * Remember whether the stream was open to begin with, and which file
+     * descriptor (if any) was associated with it.  If it was attached to
+     * a descriptor, defer closing it; freopen("/dev/stdin", "r", stdin)
+     * should work.  This is unnecessary if it was not a Unix file.
+     *
+     * For UNIX03, we always close if it was open.
+     */
+    if (fp->_flags == 0) {
+      fp->_flags = __SEOF; /* hold on to it */
+      isopen = 0;
+      wantfd = -1;
+    } else {
+      /* flush the stream; ANSI doesn't require this. */
+      if (fp->_flags & __SWR)
+        (void)__sflush(fp);
+        /* if close is NULL, closing is a no-op, hence pointless */
+#if __DARWIN_UNIX03
+      if (fp->_close)
+        (void)(*fp->_close)(fp->_cookie);
+      isopen = 0;
+      wantfd = -1;
+#else  /* !__DARWIN_UNIX03 */
+      isopen = fp->_close != NULL;
+      if ((wantfd = fp->_file) < 0 && isopen) {
+        (void)(*fp->_close)(fp->_cookie);
+        isopen = 0;
+      }
+#endif /* __DARWIN_UNIX03 */
+    }
+
+    /* Get a new descriptor to refer to the new file. */
+    f = _saved_open(file, oflags, DEFFILEMODE);
+    if (f < 0 && isopen) {
+      /* If out of fd's close the old one and try again. */
+      if (errno == ENFILE || errno == EMFILE) {
+        (void)(*fp->_close)(fp->_cookie);
+        isopen = 0;
+        f = _saved_open(file, oflags, DEFFILEMODE);
+      }
+    }
+    sverrno = errno;
+
+    /*
+     * Finish closing fp.  Even if the open succeeded above, we cannot
+     * keep fp->_base: it may be the wrong size.  This loses the effect
+     * of any setbuffer calls, but stdio has always done this before.
+     */
+    if (isopen)
+      (void)(*fp->_close)(fp->_cookie);
+
+    if (f < 0) { /* did not get it after all */
+      FUNLOCKFILE(fp);
+      fclose(fp);
+      errno = sverrno; /* restore in case _close clobbered */
+      return (NULL);
+    } else {
+
+      /*
+       * If reopening something that was open before on a real file, try
+       * to maintain the descriptor.  Various C library routines (perror)
+       * assume stderr is always fd STDERR_FILENO, even if being freopen'd.
+       */
+      if (wantfd >= 0 && f != wantfd) {
+        if (_saved_dup2(f, wantfd) >= 0) {
+          (void)_saved_close(f);
+          f = wantfd;
+        }
+      }
+
+      /*
+       * File descriptors are a full int, but _file is only a short.
+       * If we get a valid file descriptor that is greater than
+       * SHRT_MAX, then the fd will get sign-extended into an
+       * invalid file descriptor.  Handle this case by failing the
+       * open.
+       */
+      if (f > SHRT_MAX) {
+        FUNLOCKFILE(fp);
+        fclose(fp);
+        errno = EMFILE;
+        return (NULL);
+      }
+    }
+  }
+
+  /*
+   * Finish closing fp.  Even if the open succeeded above, we cannot
+   * keep fp->_base: it may be the wrong size.  This loses the effect
+   * of any setbuffer calls, but stdio has always done this before.
+   */
+  if (fp->_flags & __SMBF)
+    free((char *)fp->_bf._base);
+  fp->_w = 0;
+  fp->_r = 0;
+  fp->_p = NULL;
+  fp->_bf._base = NULL;
+  fp->_bf._size = 0;
+  fp->_lbfsize = 0;
+  if (HASUB(fp))
+    FREEUB(fp);
+  fp->_ub._size = 0;
+  if (HASLB(fp))
+    FREELB(fp);
+  fp->_lb._size = 0;
+  fp->_orientation = 0;
+  memset(&fp->_mbstate, 0, sizeof(mbstate_t));
+
+  fp->_flags = flags;
+  fp->_file = f;
   fp->_cookie = fp;
   fp->_read = _read_vfunc;
   fp->_write = _write_vfunc;
   fp->_seek = _seek_vfunc;
   fp->_close = _close_vfunc;
+  /*
+   * When opening in append mode, even though we use O_APPEND,
+   * we need to seek to the end so that ftell() gets the right
+   * answer.  If the user then alters the seek pointer, or
+   * the file extends, this will fail, but there is not much
+   * we can do about this.  (We could set __SAPP and check in
+   * fseek and ftell.)
+   */
+  if (oflags & O_APPEND)
+    (void)_sseek(fp, (fpos_t)0, SEEK_END);
+  FUNLOCKFILE(fp);
   return (fp);
 }
 
