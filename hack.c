@@ -543,6 +543,55 @@ void inject_stat(_IO_stat_t func) { _IO_file_jumps_injected.__stat = func; }
 #include <unistd.h>
 #include <wchar.h>
 
+
+extern pthread_once_t __sdidinit;
+extern void __sinit(void);
+#define FLOCKFILE(fp) flockfile(fp)
+#define FUNLOCKFILE funlockfile(fp);
+extern int __sflush(FILE *fp);
+
+/* hold a buncha junk that would grow the ABI */
+struct __sFILEX {
+  unsigned char *up;        /* saved _p when _p is doing ungetc data */
+  pthread_mutex_t fl_mutex; /* used for MT-safety */
+  int orientation : 2;      /* orientation for fwide() */
+  int counted : 1;          /* stream counted against STREAM_MAX */
+  mbstate_t mbstate;        /* multibyte conversion state */
+};
+
+#define _up _extra->up
+#define _fl_mutex _extra->fl_mutex
+#define _orientation _extra->orientation
+#define _mbstate _extra->mbstate
+#define _counted _extra->counted
+/*
+ * Test whether the given stdio file has an active ungetc buffer;
+ * release such a buffer, without restoring ordinary unread data.
+ */
+#define HASUB(fp) ((fp)->_ub._base != NULL)
+#define FREEUB(fp)                                                             \
+  {                                                                            \
+    if ((fp)->_ub._base != (fp)->_ubuf)                                        \
+      free((char *)(fp)->_ub._base);                                           \
+    (fp)->_ub._base = NULL;                                                    \
+  }
+
+/*
+ * test for an fgetln() buffer.
+ */
+#define HASLB(fp) ((fp)->_lb._base != NULL)
+#define FREELB(fp)                                                             \
+  {                                                                            \
+    free((char *)(fp)->_lb._base);                                             \
+    (fp)->_lb._base = NULL;                                                    \
+  }
+
+extern int __sflags(const char *, int *);
+
+extern int _sread(FILE *, char *, int);
+extern int _swrite(FILE *, const char *, int);
+extern int _sseek(FILE *, fpos_t, int);
+
 static _IO_read_t _saved_read = read;
 
 static _IO_seek_t _saved_seek = lseek;
@@ -556,14 +605,6 @@ static _IO_open_t _saved_open = open;
 static _IO_fcntl_t _saved_fcntl = fcntl;
 
 static _IO_dup2_t _saved_dup2 = dup2;
-
-FILE *_stdfiles[3];
-
-void __attribute__((constructor)) _initstdfile() {
-  _stdfiles[0] = stdin;
-  _stdfiles[1] = stdout;
-  _stdfiles[2] = stderr;
-}
 
 int _read_vfunc(void *cookie, char *buf, int n) {
   FILE *fp = cookie;
@@ -582,28 +623,36 @@ fpos_t _seek_vfunc(void *cookie, fpos_t offset, int whence) {
 
 int _close_vfunc(void *cookie) { return _saved_close(((FILE *)cookie)->_file); }
 
+
+FILE *_stdfiles[3];
+
+void __attribute__((constructor)) _initstdfile() {
+  _stdfiles[0] = stdin;
+  _stdfiles[1] = stdout;
+  _stdfiles[2] = stderr;
+  pthread_once(&__sdidinit, __sinit);
+  for (int i = 0; i < 3; ++i) {
+    _stdfiles[i]->_read = _read_vfunc;
+    _stdfiles[i]->_write = _write_vfunc;
+    _stdfiles[i]->_seek = _seek_vfunc;
+    _stdfiles[i]->_close = _close_vfunc;
+  }
+}
+
 void inject_read(_IO_read_t func) {
   _saved_read = func;
-  for (int i = 0; i < 3; ++i)
-    _stdfiles[i]->_read = _read_vfunc;
 }
 
 void inject_write(_IO_write_t func) {
   _saved_write = func;
-  for (int i = 0; i < 3; ++i)
-    _stdfiles[i]->_write = _write_vfunc;
 }
 
 void inject_seek(_IO_seek_t func) {
   _saved_seek = func;
-  for (int i = 0; i < 3; ++i)
-    _stdfiles[i]->_seek = _seek_vfunc;
 }
 
 void inject_close(_IO_close_t func) {
   _saved_close = func;
-  for (int i = 0; i < 3; ++i)
-    _stdfiles[i]->_close = _close_vfunc;
 }
 
 void inject_open(_IO_open_t func) { _saved_open = func; }
@@ -611,12 +660,6 @@ void inject_open(_IO_open_t func) { _saved_open = func; }
 void inject_fcntl(_IO_fcntl_t func) { _saved_fcntl = func; }
 
 void inject_dup2(_IO_dup2_t func) { _saved_dup2 = func; }
-
-extern int __sflags(const char *, int *);
-
-extern int _sread(FILE *, char *, int);
-extern int _swrite(FILE *, const char *, int);
-extern int _sseek(FILE *, fpos_t, int);
 
 FILE *fopen_injected(const char *filename, const char *mode) {
   FILE *fp;
@@ -688,47 +731,6 @@ FILE *fdopen_injected(int fd, const char *mode) {
   return (fp);
 }
 
-extern pthread_once_t __sdidinit;
-extern void __sinit(void);
-#define FLOCKFILE(fp) flockfile(fp)
-#define FUNLOCKFILE funlockfile(fp);
-extern int __sflush(FILE *fp);
-
-/* hold a buncha junk that would grow the ABI */
-struct __sFILEX {
-  unsigned char *up;        /* saved _p when _p is doing ungetc data */
-  pthread_mutex_t fl_mutex; /* used for MT-safety */
-  int orientation : 2;      /* orientation for fwide() */
-  int counted : 1;          /* stream counted against STREAM_MAX */
-  mbstate_t mbstate;        /* multibyte conversion state */
-};
-
-#define _up _extra->up
-#define _fl_mutex _extra->fl_mutex
-#define _orientation _extra->orientation
-#define _mbstate _extra->mbstate
-#define _counted _extra->counted
-/*
- * Test whether the given stdio file has an active ungetc buffer;
- * release such a buffer, without restoring ordinary unread data.
- */
-#define HASUB(fp) ((fp)->_ub._base != NULL)
-#define FREEUB(fp)                                                             \
-  {                                                                            \
-    if ((fp)->_ub._base != (fp)->_ubuf)                                        \
-      free((char *)(fp)->_ub._base);                                           \
-    (fp)->_ub._base = NULL;                                                    \
-  }
-
-/*
- * test for an fgetln() buffer.
- */
-#define HASLB(fp) ((fp)->_lb._base != NULL)
-#define FREELB(fp)                                                             \
-  {                                                                            \
-    free((char *)(fp)->_lb._base);                                             \
-    (fp)->_lb._base = NULL;                                                    \
-  }
 
 /*
  * Re-direct an existing, open (probably) file to some other file.
