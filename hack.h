@@ -9,6 +9,7 @@
 extern "C" {
 #endif
 
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <sys/param.h>
 

@@ -1,3 +1,42 @@
+#include "hack.h"
+#include <unistd.h>
+#include <fcntl.h>
+static _IO_read_t _saved_read = read;
+
+static _IO_seek_t _saved_seek = lseek;
+
+static _IO_close_t _saved_close = close;
+
+static _IO_write_t _saved_write = write;
+
+static _IO_open_t _saved_open = open;
+
+static _IO_fcntl_t _saved_fcntl = fcntl;
+
+static _IO_dup2_t _saved_dup2 = dup2;
+
+void inject_read(_IO_read_t func) {
+  _saved_read = func;
+}
+
+void inject_write(_IO_write_t func) {
+  _saved_write = func;
+}
+
+void inject_seek(_IO_seek_t func) {
+  _saved_seek = func;
+}
+
+void inject_close(_IO_close_t func) {
+  _saved_close = func;
+}
+
+void inject_open(_IO_open_t func) { _saved_open = func; }
+
+void inject_fcntl(_IO_fcntl_t func) { _saved_fcntl = func; }
+
+void inject_dup2(_IO_dup2_t func) { _saved_dup2 = func; }
+
 #ifndef __APPLE__
 #define _IO_MTSAFE_IO
 typedef struct {
@@ -269,6 +308,7 @@ struct _IO_FILE_plus {
 
 #include <fcntl.h>
 #include <gconv.h>
+#include <stdio.h>
 
 typedef union {
   struct __gconv_info __cd;
@@ -424,11 +464,12 @@ void __attribute__((constructor)) init() {
 
 FILE *fdopen_injected(int fd, const char *mode) {
   int read_write;
+  /*
   struct locked_FILE {
     struct _IO_FILE_plus fp;
     _IO_lock_t lock;
     struct _IO_wide_data wd;
-  } * new_f;
+  } * new_f;*/
   int i;
   int use_mmap = 0;
   bool do_seek = false;
@@ -479,6 +520,10 @@ FILE *fdopen_injected(int fd, const char *mode) {
     if (fcntl(fd, F_SETFL, fd_flags | O_APPEND) == -1)
       return NULL;
   }
+
+  FILE *ret = fopencookie(NULL, mode, {
+      .write =
+  })
 
   new_f = (struct locked_FILE *)malloc(sizeof(struct locked_FILE));
   if (new_f == NULL)
@@ -592,20 +637,6 @@ extern int _sread(FILE *, char *, int);
 extern int _swrite(FILE *, const char *, int);
 extern int _sseek(FILE *, fpos_t, int);
 
-static _IO_read_t _saved_read = read;
-
-static _IO_seek_t _saved_seek = lseek;
-
-static _IO_close_t _saved_close = close;
-
-static _IO_write_t _saved_write = write;
-
-static _IO_open_t _saved_open = open;
-
-static _IO_fcntl_t _saved_fcntl = fcntl;
-
-static _IO_dup2_t _saved_dup2 = dup2;
-
 int _read_vfunc(void *cookie, char *buf, int n) {
   FILE *fp = cookie;
   return (_saved_read(fp->_file, buf, (size_t)n));
@@ -638,28 +669,6 @@ void __attribute__((constructor)) _initstdfile() {
     _stdfiles[i]->_close = _close_vfunc;
   }
 }
-
-void inject_read(_IO_read_t func) {
-  _saved_read = func;
-}
-
-void inject_write(_IO_write_t func) {
-  _saved_write = func;
-}
-
-void inject_seek(_IO_seek_t func) {
-  _saved_seek = func;
-}
-
-void inject_close(_IO_close_t func) {
-  _saved_close = func;
-}
-
-void inject_open(_IO_open_t func) { _saved_open = func; }
-
-void inject_fcntl(_IO_fcntl_t func) { _saved_fcntl = func; }
-
-void inject_dup2(_IO_dup2_t func) { _saved_dup2 = func; }
 
 FILE *fopen_injected(const char *filename, const char *mode) {
   FILE *fp;
