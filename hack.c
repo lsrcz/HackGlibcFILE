@@ -15,6 +15,8 @@ static _unix_fcntl_t _saved_fcntl = fcntl;
 
 static _unix_dup2_t _saved_dup2 = dup2;
 
+static _unix_fstat_t _saved_fstat = fstat;
+
 void inject_read(_unix_read_t func) { _saved_read = func; }
 
 void inject_write(_unix_write_t func) { _saved_write = func; }
@@ -29,25 +31,31 @@ void inject_fcntl(_unix_fcntl_t func) { _saved_fcntl = func; }
 
 void inject_dup2(_unix_dup2_t func) { _saved_dup2 = func; }
 
+void inject_fstat(_unix_fstat_t func) { _saved_fstat = func; }
+
 #ifndef __APPLE__
 
-ssize_t _read_vfunc(void *cookie, char *buf, size_t n) {
+ssize_t _read_vfunc(FILE *cookie, void *buf, ssize_t n) {
   FILE *fp = cookie;
   return (_saved_read(fp->_fileno, buf, (size_t)n));
 }
 
-ssize_t _write_vfunc(void *cookie, const char *buf, size_t n) {
+ssize_t _write_vfunc(FILE *cookie, const void *buf, ssize_t n) {
   FILE *fp = cookie;
   return (_saved_write(fp->_fileno, buf, (size_t)n));
 }
 
-int _seek_vfunc(void *cookie, off64_t offset, int whence) {
+off64_t _seek_vfunc(FILE *cookie, off64_t offset, int whence) {
   FILE *fp = cookie;
   return (_saved_seek(fp->_fileno, (off_t)offset, whence));
 }
 
-int _close_vfunc(void *cookie) {
+int _close_vfunc(FILE *cookie) {
   return _saved_close(((FILE *)cookie)->_fileno);
+}
+
+int _fstat_vfunc(FILE *cookie, void *buf) {
+  return _saved_fstat(cookie->_fileno, buf);
 }
 
 #else
@@ -85,9 +93,6 @@ int _close_vfunc(void *cookie) { return _saved_close(((FILE *)cookie)->_file); }
 #include <unistd.h>
 
 #define _IO_pos_BAD ((off64_t)-1)
-
-extern const struct _IO_jump_t *
-IO_validate_vtable(const struct _IO_jump_t *vtable);
 
 #define _IO_seek_set 0
 #define _IO_seek_cur 1
@@ -336,71 +341,6 @@ struct _IO_FILE_plus {
 #include <gconv.h>
 #include <stdio.h>
 
-typedef union {
-  struct __gconv_info __cd;
-  struct {
-    struct __gconv_info __cd;
-    struct __gconv_step_data __data;
-  } __combined;
-} _IO_iconv_t;
-
-/* The order of the elements in the following struct must match the order
-   of the virtual functions in the libstdc++ codecvt class.  */
-struct _IO_codecvt {
-  void (*__codecvt_destr)(struct _IO_codecvt *);
-
-  enum __codecvt_result (*__codecvt_do_out)(struct _IO_codecvt *, __mbstate_t *,
-                                            const wchar_t *, const wchar_t *,
-                                            const wchar_t **, char *, char *,
-                                            char **);
-
-  enum __codecvt_result (*__codecvt_do_unshift)(struct _IO_codecvt *,
-                                                __mbstate_t *, char *, char *,
-                                                char **);
-
-  enum __codecvt_result (*__codecvt_do_in)(struct _IO_codecvt *, __mbstate_t *,
-                                           const char *, const char *,
-                                           const char **, wchar_t *, wchar_t *,
-                                           wchar_t **);
-
-  int (*__codecvt_do_encoding)(struct _IO_codecvt *);
-
-  int (*__codecvt_do_always_noconv)(struct _IO_codecvt *);
-
-  int (*__codecvt_do_length)(struct _IO_codecvt *, __mbstate_t *, const char *,
-                             const char *, size_t);
-
-  int (*__codecvt_do_max_length)(struct _IO_codecvt *);
-
-  _IO_iconv_t __cd_in;
-  _IO_iconv_t __cd_out;
-};
-
-/* Extra data for wide character streams.  */
-struct _IO_wide_data {
-  wchar_t *_IO_read_ptr;   /* Current read pointer */
-  wchar_t *_IO_read_end;   /* End of get area. */
-  wchar_t *_IO_read_base;  /* Start of putback+get area. */
-  wchar_t *_IO_write_base; /* Start of put area. */
-  wchar_t *_IO_write_ptr;  /* Current put pointer. */
-  wchar_t *_IO_write_end;  /* End of put area. */
-  wchar_t *_IO_buf_base;   /* Start of reserve area. */
-  wchar_t *_IO_buf_end;    /* End of reserve area. */
-  /* The following fields are used to support backing up and undo. */
-  wchar_t *_IO_save_base;   /* Pointer to start of non-current get area. */
-  wchar_t *_IO_backup_base; /* Pointer to first valid character of
-                              backup area */
-  wchar_t *_IO_save_end;    /* Pointer to end of non-current get area. */
-
-  __mbstate_t _IO_state;
-  __mbstate_t _IO_last_state;
-  struct _IO_codecvt _codecvt;
-
-  wchar_t _shortbuf[1];
-
-  const struct _IO_jump_t *_wide_vtable;
-};
-
 #define _IO_JUMPS(THIS) (THIS)->vtable
 #define __set_errno(val) (errno = (val))
 #define _IO_mask_flags(fp, f, mask)                                            \
@@ -424,95 +364,45 @@ struct _IO_wide_data {
 /* 0x4000  No longer used, reserved for compat.  */
 #define _IO_USER_LOCK 0x8000
 
-static void _IO_old_init(FILE *fp, int flags) {
-  fp->_flags = _IO_MAGIC | flags;
-  fp->_flags2 = 0;
-  // if (stdio_needs_locking)
-  fp->_flags2 |= 128; //_IO_FLAGS2_NEED_LOCK;
-  fp->_IO_buf_base = NULL;
-  fp->_IO_buf_end = NULL;
-  fp->_IO_read_base = NULL;
-  fp->_IO_read_ptr = NULL;
-  fp->_IO_read_end = NULL;
-  fp->_IO_write_base = NULL;
-  fp->_IO_write_ptr = NULL;
-  fp->_IO_write_end = NULL;
-  fp->_chain = NULL; /* Not necessary. */
-
-  fp->_IO_save_base = NULL;
-  fp->_IO_backup_base = NULL;
-  fp->_IO_save_end = NULL;
-  fp->_markers = NULL;
-  fp->_cur_column = 0;
-#if _IO_JUMPS_OFFSET
-  fp->_vtable_offset = 0;
-#endif
-#ifdef _IO_MTSAFE_IO
-  if (fp->_lock != NULL)
-    _IO_lock_init(*fp->_lock);
-#endif
-}
-
-extern void _IO_no_init(FILE *fp, int flags, int orientation,
-                        struct _IO_wide_data *wd, const struct _IO_jump_t *jmp);
-
-static void _IO_no_init(FILE *fp, int flags, int orientation,
-                        struct _IO_wide_data *wd,
-                        const struct _IO_jump_t *jmp) {
-  _IO_old_init(fp, flags);
-  fp->_mode = orientation;
-  if (orientation >= 0) {
-    fp->__pad2 = wd;
-    ((struct _IO_wide_data *)fp->__pad2)->_IO_buf_base = NULL;
-    ((struct _IO_wide_data *)fp->__pad2)->_IO_buf_end = NULL;
-    ((struct _IO_wide_data *)fp->__pad2)->_IO_read_base = NULL;
-    ((struct _IO_wide_data *)fp->__pad2)->_IO_read_ptr = NULL;
-    ((struct _IO_wide_data *)fp->__pad2)->_IO_read_end = NULL;
-    ((struct _IO_wide_data *)fp->__pad2)->_IO_write_base = NULL;
-    ((struct _IO_wide_data *)fp->__pad2)->_IO_write_ptr = NULL;
-    ((struct _IO_wide_data *)fp->__pad2)->_IO_write_end = NULL;
-    ((struct _IO_wide_data *)fp->__pad2)->_IO_save_base = NULL;
-    ((struct _IO_wide_data *)fp->__pad2)->_IO_backup_base = NULL;
-    ((struct _IO_wide_data *)fp->__pad2)->_IO_save_end = NULL;
-
-    ((struct _IO_wide_data *)fp->__pad2)->_wide_vtable = jmp;
-  } else
-    /* Cause predictable crash when a wide function is called on a byte
-       stream.  */
-    fp->__pad2 = (struct _IO_wide_data *)-1L;
-  fp->__pad3 = NULL;
-}
-
 extern const struct _IO_jump_t _IO_wfile_jumps;
 extern const struct _IO_jump_t _IO_file_jumps;
 struct _IO_jump_t _IO_file_jumps_injected;
 
-ssize_t original_read(FILE *file, void *buf, ssize_t size) {
-  return _IO_file_jumps.__read(file, buf, size);
+void __attribute__((constructor(101))) bypass_vtable_check() {
+  struct locked_FILE {
+      struct _IO_FILE_plus cfile;
+      _IO_lock_t lock;
+  } *new_f;
+
+  new_f = (struct locked_FILE *)malloc(sizeof(struct locked_FILE));
+
+  new_f->cfile.file._lock = &new_f->lock;
+
+  extern void _IO_init(FILE *fp, int flags);
+  _IO_init(&new_f->cfile.file, 0);
+  free(new_f);
 }
 
-ssize_t original_write(FILE *file, const void *buf, ssize_t size) {
-  return _IO_file_jumps.__write(file, buf, size);
-}
-
-off64_t original_seek(FILE *file, off64_t offset, int whence) {
-  return _IO_file_jumps.__seek(file, offset, whence);
-}
-
-int original_close(FILE *file) { return _IO_file_jumps.__close(file); }
-
-int original_stat(FILE *file, void *buf) {
-  return _IO_file_jumps.__stat(file, buf);
-}
-
-void __attribute__((constructor)) init() {
+void __attribute__((constructor(102))) init() {
   memcpy(&_IO_file_jumps_injected, &_IO_file_jumps, sizeof(struct _IO_jump_t));
+  _IO_file_jumps_injected.__close = _close_vfunc;
+  _IO_file_jumps_injected.__write = _write_vfunc;
+  _IO_file_jumps_injected.__read = _read_vfunc;
+  _IO_file_jumps_injected.__seek = _seek_vfunc;
+  _IO_file_jumps_injected.__stat = _fstat_vfunc;
+}
+
+void __attribute__((constructor(103))) init_std() {
+  ((struct _IO_FILE_plus *)stdin)->vtable = &_IO_file_jumps_injected;
+  ((struct _IO_FILE_plus *)stdout)->vtable = &_IO_file_jumps_injected;
+  ((struct _IO_FILE_plus *)stderr)->vtable = &_IO_file_jumps_injected;
 }
 
 FILE *fdopen_injected(int fd, const char *mode) {
   int read_write;
   int i;
   bool do_seek = false;
+  const char *orimode = mode;
 
   switch (*mode) {
   case 'r':
@@ -560,12 +450,13 @@ FILE *fdopen_injected(int fd, const char *mode) {
                                         .write = _write_vfunc,
                                         .seek = _seek_vfunc,
                                         .close = _close_vfunc};
-  FILE *new_f = fopencookie(NULL, mode, io_functions);
+  FILE *new_f = fopencookie(NULL, orimode, io_functions);
   if (new_f == NULL)
     return NULL;
 
   new_f->_fileno = fd;
   new_f->_flags &= ~_IO_DELETE_DONT_CLOSE;
+  ((struct _IO_FILE_plus *)new_f)->vtable = &_IO_file_jumps_injected;
 
   _IO_mask_flags(new_f, read_write,
                  _IO_NO_READS + _IO_NO_WRITES + _IO_IS_APPENDING);
@@ -596,17 +487,21 @@ static FILE *_new_file_open(FILE *file, const char *filename,
   int oflags = 0, omode;
   int oprot = 0666;
   int i;
+  int read_write;
   switch (*mode) {
   case 'r':
     omode = O_RDONLY;
+    read_write = _IO_NO_WRITES;
     break;
   case 'w':
     omode = O_WRONLY;
     oflags = O_CREAT | O_TRUNC;
+    read_write = _IO_NO_READS;
     break;
   case 'a':
     omode = O_WRONLY;
     oflags = O_CREAT | O_APPEND;
+    read_write = _IO_NO_READS | _IO_IS_APPENDING;
     break;
   default:
     __set_errno(EINVAL);
@@ -618,6 +513,7 @@ static FILE *_new_file_open(FILE *file, const char *filename,
       break;
     case '+':
       omode = O_RDWR;
+      read_write &= _IO_IS_APPENDING;
       continue;
     default:
       continue;
@@ -628,6 +524,7 @@ static FILE *_new_file_open(FILE *file, const char *filename,
   if (fd < 0)
     return NULL;
   file->_fileno = fd;
+  _IO_mask_flags (file, read_write,_IO_NO_READS+_IO_NO_WRITES+_IO_IS_APPENDING);
   if (file->_flags &
       (_IO_IS_APPENDING | _IO_NO_READS) == (_IO_IS_APPENDING | _IO_NO_READS)) {
     off64_t new_pos = _saved_seek(fd, 0, _IO_seek_end);
@@ -654,6 +551,7 @@ FILE *fopen_injected(const char *filename, const char *mode) {
     fclose(file);
     return NULL;
   }
+  ((struct _IO_FILE_plus *)file)->vtable = &_IO_file_jumps_injected;
   return file;
 }
 
@@ -757,6 +655,32 @@ _IO_unsave_markers (FILE *fp)
     _IO_free_backup_area (fp);
 }
 
+# define _IO_FLAGS2_NOCLOSE 32
+# define _IO_FLAGS2_CLOEXEC 64
+# define FREE_BUF(_B, _S) \
+       free(_B)
+#define _IO_blen(fp) ((fp)->_IO_buf_end - (fp)->_IO_buf_base)
+#define CLOSED_FILEBUF_FLAGS \
+  (_IO_IS_FILEBUF+_IO_NO_READS+_IO_NO_WRITES+_IO_TIED_PUT_GET)
+
+
+void
+_IO_setb (f, b, eb, a)
+        _IO_FILE *f;
+        char *b;
+        char *eb;
+        int a;
+{
+    if (f->_IO_buf_base && !(f->_flags & _IO_USER_BUF))
+        FREE_BUF (f->_IO_buf_base, _IO_blen (f));
+    f->_IO_buf_base = b;
+    f->_IO_buf_end = eb;
+    if (a)
+        f->_flags &= ~_IO_USER_BUF;
+    else
+        f->_flags |= _IO_USER_BUF;
+}
+
 int _IO_new_file_close_it(FILE *fp) {
   int write_status;
   if (!_IO_file_is_open(fp))
@@ -778,8 +702,8 @@ int _IO_new_file_close_it(FILE *fp) {
   _IO_setg(fp, NULL, NULL, NULL);
   _IO_setp(fp, NULL, NULL);
 
-  _IO_un_link((struct _IO_FILE_plus *)fp);
-  fp->_flags = _IO_MAGIC | CLOSED_FILEBUF_FLAGS;
+  //_IO_un_link((struct _IO_FILE_plus *)fp);
+  fp->_flags = _IO_MAGIC | CLOSED_FILEBUF_FLAGS | _IO_LINKED;
   fp->_fileno = -1;
   fp->_offset = _IO_pos_BAD;
 
@@ -798,7 +722,25 @@ FILE *freopen_injected(const char *filename, const char *mode, FILE *fp) {
   const char *gfilename = filename; // should handle filename == NULL
   if (filename == NULL)
     goto end;
+  fp->_flags2 |= _IO_FLAGS2_NOCLOSE;
+  _IO_new_file_close_it(fp);
 
+  result = _new_file_open(fp, gfilename, mode);
+  fp->_flags2 &= ~_IO_FLAGS2_NOCLOSE;
+  if (result != NULL) {
+      result->_mode = -1;
+
+      if (fd != -1) {
+          dup3(result->_fileno, fd, (result->_flags2 & _IO_FLAGS2_CLOEXEC) != 0 ? O_CLOEXEC : 0);
+          _saved_close(result->_fileno);
+          result->_fileno = fd;
+      }
+  } else {
+      fclose(fp);
+      if (fd != -1) {
+          _saved_close(fd);
+      }
+  }
 end:
   return result;
 }

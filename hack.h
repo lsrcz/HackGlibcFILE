@@ -20,6 +20,7 @@ typedef struct {
 #endif
 #include <stdio.h>
 #include <sys/param.h>
+#include <sys/stat.h>
 
 #ifndef __APPLE__
 
@@ -61,7 +62,7 @@ typedef int (*_IO_showmanyc_t)(FILE *);
 
 typedef void (*_IO_imbue_t)(FILE *, void *);
 
-void inject_stat(_IO_stat_t func);
+
 
 #endif
 
@@ -91,6 +92,8 @@ typedef int (*_unix_fcntl_t)(int fd, int flag, ...);
 
 typedef int (*_unix_dup2_t)(int fd1, int fd2);
 
+typedef int (*_unix_fstat_t)(int fd, struct stat *buf);
+
 void inject_read(_unix_read_t func);
 
 void inject_write(_unix_write_t func);
@@ -104,6 +107,8 @@ void inject_open(_unix_open_t func);
 void inject_fcntl(_unix_fcntl_t func);
 
 void inject_dup2(_unix_dup2_t func);
+
+void inject_fstat(_unix_fstat_t func);
 
 FILE *fopen_injected(const char *filename, const char *mode);
 

@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <fcntl.h>
 #include <unistd.h>
+#include <stdarg.h>
+#include <string.h>
 
 void print_buf(const char *buf, size_t size) {
   struct ctrl {
@@ -40,10 +42,14 @@ void print_buf(const char *buf, size_t size) {
     }
   }
 }
+#ifndef __APPLE__
+ssize_t tracking_write(int fd, const void *buf, ssize_t size)
+#else
+ssize_t tracking_write(int fd, const void *buf, size_t size)
+#endif
+{
 
-ssize_t tracking_write(int fd, const void *buf, size_t size) {
-
-  char buf1[std::max(size + 50, (size_t)1024)];
+  char buf1[std::max((size_t)size + 50, (size_t)1024)];
   int n = sprintf(buf1, "write(%d, \"", fd);
   write(STDERR_FILENO, buf1, n);
   print_buf((const char *)buf, size);
@@ -53,9 +59,14 @@ ssize_t tracking_write(int fd, const void *buf, size_t size) {
   return ret;
 }
 
-ssize_t tracking_read(int fd, void *buf, size_t size) {
+#ifndef __APPLE__
+ssize_t tracking_read(int fd, void *buf, ssize_t size)
+#else
+ssize_t tracking_read(int fd, void *buf, size_t size)
+#endif
+{
   ssize_t ret = read(fd, buf, size);
-  char buf1[std::max(size + 50, (size_t)1024)];
+  char buf1[std::max((size_t)size + 50, (size_t)1024)];
   int n = sprintf(buf1, "read(%d, 0x%lx, %ld) = %d", fd, (unsigned long)buf,
                   size, ret);
   write(STDERR_FILENO, buf1, n);
@@ -105,6 +116,7 @@ int tracking_dup2(int fd1, int fd2) {
 }
 
 int main() {
+    int aaa = stdout->_flags;
   inject_write(tracking_write);
   inject_read(tracking_read);
   inject_close(tracking_close);
@@ -124,13 +136,20 @@ int main() {
   fclose(file1);
 
   fprintf(stdout, "a");
+  fputc('\n', stdout);
   fprintf(stdout, "b");
   fprintf(stderr, "a");
   fprintf(stderr, "b");
 
+  int aa = stdout->_flags;
   freopen_injected("a", "w", stdout);
+    int b = stdout->_flags;
   printf("123456");
   fflush(stdout);
+    int c = stdout->_flags;
+
+    char buffff[1000];
+    sprintf(buffff, "%x, %x, %x, %x", aaa, aa, b, c);
 
   freopen_injected("a", "r", stdin);
   int a;
