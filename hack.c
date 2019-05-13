@@ -1,6 +1,6 @@
 #include "hack.h"
-#include <unistd.h>
 #include <fcntl.h>
+#include <unistd.h>
 static _unix_read_t _saved_read = read;
 
 static _unix_seek_t _saved_seek = lseek;
@@ -15,21 +15,13 @@ static _unix_fcntl_t _saved_fcntl = fcntl;
 
 static _unix_dup2_t _saved_dup2 = dup2;
 
-void inject_read(_unix_read_t func) {
-  _saved_read = func;
-}
+void inject_read(_unix_read_t func) { _saved_read = func; }
 
-void inject_write(_unix_write_t func) {
-  _saved_write = func;
-}
+void inject_write(_unix_write_t func) { _saved_write = func; }
 
-void inject_seek(_unix_seek_t func) {
-  _saved_seek = func;
-}
+void inject_seek(_unix_seek_t func) { _saved_seek = func; }
 
-void inject_close(_unix_close_t func) {
-  _saved_close = func;
-}
+void inject_close(_unix_close_t func) { _saved_close = func; }
 
 void inject_open(_unix_open_t func) { _saved_open = func; }
 
@@ -38,13 +30,47 @@ void inject_fcntl(_unix_fcntl_t func) { _saved_fcntl = func; }
 void inject_dup2(_unix_dup2_t func) { _saved_dup2 = func; }
 
 #ifndef __APPLE__
-#define _IO_MTSAFE_IO
-typedef struct {
-  int lock;
-  int cnt;
-  void *owner;
-} _IO_lock_t;
 
+ssize_t _read_vfunc(void *cookie, char *buf, size_t n) {
+  FILE *fp = cookie;
+  return (_saved_read(fp->_fileno, buf, (size_t)n));
+}
+
+ssize_t _write_vfunc(void *cookie, const char *buf, size_t n) {
+  FILE *fp = cookie;
+  return (_saved_write(fp->_fileno, buf, (size_t)n));
+}
+
+int _seek_vfunc(void *cookie, off64_t offset, int whence) {
+  FILE *fp = cookie;
+  return (_saved_seek(fp->_fileno, (off_t)offset, whence));
+}
+
+int _close_vfunc(void *cookie) {
+  return _saved_close(((FILE *)cookie)->_fileno);
+}
+
+#else
+
+int _read_vfunc(void *cookie, char *buf, int n) {
+  FILE *fp = cookie;
+  return (_saved_read(fp->_file, buf, (size_t)n));
+}
+
+int _write_vfunc(void *cookie, const char *buf, int n) {
+  FILE *fp = cookie;
+  return (_saved_write(fp->_file, buf, (size_t)n));
+}
+
+fpos_t _seek_vfunc(void *cookie, fpos_t offset, int whence) {
+  FILE *fp = cookie;
+  return (_saved_seek(fp->_file, (off_t)offset, whence));
+}
+
+int _close_vfunc(void *cookie) { return _saved_close(((FILE *)cookie)->_file); }
+#endif
+
+#ifndef __APPLE__
 #define _IO_lock_initializer                                                   \
   { 0, 0, NULL }
 
@@ -379,6 +405,24 @@ struct _IO_wide_data {
 #define __set_errno(val) (errno = (val))
 #define _IO_mask_flags(fp, f, mask)                                            \
   ((fp)->_flags = ((fp)->_flags & ~(mask)) | ((f) & (mask)))
+#define _IO_MAGIC 0xFBAD0000 /* Magic number */
+#define _IO_MAGIC_MASK 0xFFFF0000
+#define _IO_USER_BUF 0x0001 /* Don't deallocate buffer on close. */
+#define _IO_UNBUFFERED 0x0002
+#define _IO_NO_READS 0x0004  /* Reading not allowed.  */
+#define _IO_NO_WRITES 0x0008 /* Writing not allowed.  */
+#define _IO_EOF_SEEN 0x0010
+#define _IO_ERR_SEEN 0x0020
+#define _IO_DELETE_DONT_CLOSE 0x0040 /* Don't call close(_fileno) on close. */
+#define _IO_LINKED 0x0080            /* In the list of all open files.  */
+#define _IO_IN_BACKUP 0x0100
+#define _IO_LINE_BUF 0x0200
+#define _IO_TIED_PUT_GET 0x0400 /* Put and get pointer move in unison.  */
+#define _IO_CURRENTLY_PUTTING 0x0800
+#define _IO_IS_APPENDING 0x1000
+#define _IO_IS_FILEBUF 0x2000
+/* 0x4000  No longer used, reserved for compat.  */
+#define _IO_USER_LOCK 0x8000
 
 static void _IO_old_init(FILE *fp, int flags) {
   fp->_flags = _IO_MAGIC | flags;
@@ -408,6 +452,9 @@ static void _IO_old_init(FILE *fp, int flags) {
     _IO_lock_init(*fp->_lock);
 #endif
 }
+
+extern void _IO_no_init(FILE *fp, int flags, int orientation,
+                        struct _IO_wide_data *wd, const struct _IO_jump_t *jmp);
 
 static void _IO_no_init(FILE *fp, int flags, int orientation,
                         struct _IO_wide_data *wd,
@@ -464,14 +511,7 @@ void __attribute__((constructor)) init() {
 
 FILE *fdopen_injected(int fd, const char *mode) {
   int read_write;
-  /*
-  struct locked_FILE {
-    struct _IO_FILE_plus fp;
-    _IO_lock_t lock;
-    struct _IO_wide_data wd;
-  } * new_f;*/
   int i;
-  int use_mmap = 0;
   bool do_seek = false;
 
   switch (*mode) {
@@ -495,18 +535,13 @@ FILE *fdopen_injected(int fd, const char *mode) {
     case '+':
       read_write &= _IO_IS_APPENDING;
       break;
-    case 'm':
-      use_mmap = 1;
-      continue;
-    case 'x':
-    case 'b':
     default:
       /* Ignore */
       continue;
     }
     break;
   }
-  int fd_flags = fcntl(fd, F_GETFL);
+  int fd_flags = _saved_fcntl(fd, F_GETFL);
   if (fd_flags == -1)
     return NULL;
   if (((fd_flags & O_ACCMODE) == O_RDONLY && !(read_write & _IO_NO_WRITES)) ||
@@ -521,29 +556,18 @@ FILE *fdopen_injected(int fd, const char *mode) {
       return NULL;
   }
 
-  FILE *ret = fopencookie(NULL, mode, {
-      .write =
-  })
-
-  new_f = (struct locked_FILE *)malloc(sizeof(struct locked_FILE));
+  cookie_io_functions_t io_functions = {.read = _read_vfunc,
+                                        .write = _write_vfunc,
+                                        .seek = _seek_vfunc,
+                                        .close = _close_vfunc};
+  FILE *new_f = fopencookie(NULL, mode, io_functions);
   if (new_f == NULL)
     return NULL;
 
-  new_f->fp.file._lock = &new_f->lock;
+  new_f->_fileno = fd;
+  new_f->_flags &= ~_IO_DELETE_DONT_CLOSE;
 
-  extern void _IO_no_init(FILE * fp, int flags, int orientation,
-                          struct _IO_wide_data *wd,
-                          const struct _IO_jump_t *jmp);
-  _IO_no_init(&new_f->fp.file, 0, 0, &new_f->wd, &_IO_wfile_jumps);
-  _IO_JUMPS(&new_f->fp) = &_IO_file_jumps_injected;
-
-  extern void _IO_file_init(struct _IO_FILE_plus * fp);
-  _IO_file_init(&new_f->fp);
-
-  new_f->fp.file._fileno = fd;
-  new_f->fp.file._flags &= ~_IO_DELETE_DONT_CLOSE;
-
-  _IO_mask_flags(&new_f->fp.file, read_write,
+  _IO_mask_flags(new_f, read_write,
                  _IO_NO_READS + _IO_NO_WRITES + _IO_IS_APPENDING);
 
   /* For append mode, set the file offset to the end of the file if we added
@@ -551,30 +575,234 @@ FILE *fdopen_injected(int fd, const char *mode) {
      though, since the file handle is not active.  */
   if (do_seek && ((read_write & (_IO_IS_APPENDING | _IO_NO_READS)) ==
                   (_IO_IS_APPENDING | _IO_NO_READS))) {
-    off64_t new_pos = _IO_SYSSEEK(&new_f->fp.file, 0, _IO_seek_end);
+    off64_t new_pos = _saved_seek(fd, 0, _IO_seek_end);
     if (new_pos == _IO_pos_BAD && errno != ESPIPE)
       return NULL;
   }
-  return &new_f->fp.file;
+  return new_f;
 }
 
-FILE *fopen_injected(const char *filename, const char *mode) {
-  FILE *file = fopen(filename, mode);
-  if (!file)
+struct _IO_cookie_file {
+  struct _IO_FILE_plus __fp;
+  void *__cookie;
+  cookie_io_functions_t __io_functions;
+};
+
+#define _IO_mask_flags(fp, f, mask)                                            \
+  ((fp)->_flags = ((fp)->_flags & ~(mask)) | ((f) & (mask)))
+
+static FILE *_new_file_open(FILE *file, const char *filename,
+                            const char *mode) {
+  int oflags = 0, omode;
+  int oprot = 0666;
+  int i;
+  switch (*mode) {
+  case 'r':
+    omode = O_RDONLY;
+    break;
+  case 'w':
+    omode = O_WRONLY;
+    oflags = O_CREAT | O_TRUNC;
+    break;
+  case 'a':
+    omode = O_WRONLY;
+    oflags = O_CREAT | O_APPEND;
+    break;
+  default:
+    __set_errno(EINVAL);
     return NULL;
-  _IO_JUMPS_FILE_plus(file) = &_IO_file_jumps_injected;
+  }
+  for (i = 1; i < 7; ++i) {
+    switch (*++mode) {
+    case '\0':
+      break;
+    case '+':
+      omode = O_RDWR;
+      continue;
+    default:
+      continue;
+    }
+  }
+
+  int fd = _saved_open(filename, omode | oflags, oprot);
+  if (fd < 0)
+    return NULL;
+  file->_fileno = fd;
+  if (file->_flags &
+      (_IO_IS_APPENDING | _IO_NO_READS) == (_IO_IS_APPENDING | _IO_NO_READS)) {
+    off64_t new_pos = _saved_seek(fd, 0, _IO_seek_end);
+    if (new_pos == _IO_pos_BAD && errno != ESPIPE) {
+      _saved_close(fd);
+      return NULL;
+    }
+  }
   return file;
 }
 
-void inject_read(_IO_read_t func) { _IO_file_jumps_injected.__read = func; }
+FILE *fopen_injected(const char *filename, const char *mode) {
+  cookie_io_functions_t io_functions = {.read = _read_vfunc,
+                                        .write = _write_vfunc,
+                                        .seek = _seek_vfunc,
+                                        .close = _close_vfunc};
+  FILE *file = fopencookie(NULL, mode, io_functions);
+  ((struct _IO_cookie_file *)file)->__cookie = file;
 
-void inject_write(_IO_write_t func) { _IO_file_jumps_injected.__write = func; }
+  int oflags = 0, omode;
+  int read_write;
+  int oprot = 0666;
+  if (!_new_file_open(file, filename, mode)) {
+    fclose(file);
+    return NULL;
+  }
+  return file;
+}
 
-void inject_seek(_IO_seek_t func) { _IO_file_jumps_injected.__seek = func; }
+unsigned
+_IO_adjust_column (unsigned start, const char *line, int count)
+{
+  const char *ptr = line + count;
+  while (ptr > line)
+    if (*--ptr == '\n')
+      return line + count - ptr - 1;
+  return start + count;
+}
 
-void inject_close(_IO_close_t func) { _IO_file_jumps_injected.__close = func; }
+#define _IO_setg(fp, eb, g, eg)  ((fp)->_IO_read_base = (eb),\
+	(fp)->_IO_read_ptr = (g), (fp)->_IO_read_end = (eg))
+#define _IO_setp(__fp, __p, __ep) \
+       ((__fp)->_IO_write_base = (__fp)->_IO_write_ptr \
+	= __p, (__fp)->_IO_write_end = (__ep))
+#define _IO_have_backup(fp) ((fp)->_IO_save_base != NULL)
+#define _IO_in_backup(fp) ((fp)->_flags & _IO_IN_BACKUP)
+static size_t
+new_do_write (FILE *fp, const char *data, size_t to_do)
+{
+  size_t count;
+  if (fp->_flags & _IO_IS_APPENDING)
+    /* On a system without a proper O_APPEND implementation,
+       you would need to sys_seek(0, SEEK_END) here, but is
+       not needed nor desirable for Unix- or Posix-like systems.
+       Instead, just indicate that offset (before and after) is
+       unpredictable. */
+    fp->_offset = _IO_pos_BAD;
+  else if (fp->_IO_read_end != fp->_IO_write_base)
+  {
+    off64_t new_pos
+        = _IO_SYSSEEK (fp, fp->_IO_write_base - fp->_IO_read_end, 1);
+    if (new_pos == _IO_pos_BAD)
+      return 0;
+    fp->_offset = new_pos;
+  }
+  count = _IO_SYSWRITE (fp, data, to_do);
+  if (fp->_cur_column && count)
+    fp->_cur_column = _IO_adjust_column (fp->_cur_column - 1, data, count) + 1;
+  _IO_setg (fp, fp->_IO_buf_base, fp->_IO_buf_base, fp->_IO_buf_base);
+  fp->_IO_write_base = fp->_IO_write_ptr = fp->_IO_buf_base;
+  fp->_IO_write_end = (fp->_mode <= 0
+                       && (fp->_flags & (_IO_LINE_BUF | _IO_UNBUFFERED))
+                       ? fp->_IO_buf_base : fp->_IO_buf_end);
+  return count;
+}
 
-void inject_stat(_IO_stat_t func) { _IO_file_jumps_injected.__stat = func; }
+int
+_IO_do_write (FILE *fp, const char *data, size_t to_do)
+{
+  return (to_do == 0
+          || (size_t) new_do_write (fp, data, to_do) == to_do) ? 0 : EOF;
+}
+
+#define _IO_file_is_open(__fp) ((__fp)->_fileno != -1)
+#define _IO_do_flush(_f)                                                       \
+  _IO_do_write(_f, (_f)->_IO_write_base,                                       \
+               (_f)->_IO_write_ptr - (_f)->_IO_write_base)
+
+void
+_IO_switch_to_main_get_area (FILE *fp)
+{
+  char *tmp;
+  fp->_flags &= ~_IO_IN_BACKUP;
+  /* Swap _IO_read_end and _IO_save_end. */
+  tmp = fp->_IO_read_end;
+  fp->_IO_read_end = fp->_IO_save_end;
+  fp->_IO_save_end= tmp;
+  /* Swap _IO_read_base and _IO_save_base. */
+  tmp = fp->_IO_read_base;
+  fp->_IO_read_base = fp->_IO_save_base;
+  fp->_IO_save_base = tmp;
+  /* Set _IO_read_ptr. */
+  fp->_IO_read_ptr = fp->_IO_read_base;
+}
+
+void
+_IO_free_backup_area (FILE *fp)
+{
+  if (_IO_in_backup (fp))
+    _IO_switch_to_main_get_area (fp);  /* Just in case. */
+  free (fp->_IO_save_base);
+  fp->_IO_save_base = NULL;
+  fp->_IO_save_end = NULL;
+  fp->_IO_backup_base = NULL;
+}
+
+void
+_IO_unsave_markers (FILE *fp)
+{
+  struct _IO_marker *mark = fp->_markers;
+  if (mark)
+  {
+    fp->_markers = 0;
+  }
+
+  if (_IO_have_backup (fp))
+    _IO_free_backup_area (fp);
+}
+
+int _IO_new_file_close_it(FILE *fp) {
+  int write_status;
+  if (!_IO_file_is_open(fp))
+    return EOF;
+
+  if ((fp->_flags & _IO_NO_WRITES) == 0 &&
+      (fp->_flags & _IO_CURRENTLY_PUTTING) != 0)
+    write_status = _IO_do_flush(fp);
+  else
+    write_status = 0;
+
+  _IO_unsave_markers(fp);
+
+  int close_status =
+      ((fp->_flags2 & _IO_FLAGS2_NOCLOSE) == 0 ? _IO_SYSCLOSE(fp) : 0);
+
+
+  _IO_setb(fp, NULL, NULL, 0);
+  _IO_setg(fp, NULL, NULL, NULL);
+  _IO_setp(fp, NULL, NULL);
+
+  _IO_un_link((struct _IO_FILE_plus *)fp);
+  fp->_flags = _IO_MAGIC | CLOSED_FILEBUF_FLAGS;
+  fp->_fileno = -1;
+  fp->_offset = _IO_pos_BAD;
+
+  return close_status ? close_status : write_status;
+}
+
+FILE *freopen_injected(const char *filename, const char *mode, FILE *fp) {
+  FILE *result = NULL;
+  char fdfilename[200];
+  // no acquire lock here
+  _IO_SYNC(fp);
+
+  if (!(fp->_flags & _IO_IS_FILEBUF))
+    goto end;
+  int fd = fileno(fp);
+  const char *gfilename = filename; // should handle filename == NULL
+  if (filename == NULL)
+    goto end;
+
+end:
+  return result;
+}
+
 #else
 
 #include "hack.h"
@@ -587,7 +815,6 @@ void inject_stat(_IO_stat_t func) { _IO_file_jumps_injected.__stat = func; }
 #include <sys/stat.h>
 #include <unistd.h>
 #include <wchar.h>
-
 
 extern pthread_once_t __sdidinit;
 extern void __sinit(void);
@@ -653,7 +880,6 @@ fpos_t _seek_vfunc(void *cookie, fpos_t offset, int whence) {
 }
 
 int _close_vfunc(void *cookie) { return _saved_close(((FILE *)cookie)->_file); }
-
 
 FILE *_stdfiles[3];
 
@@ -739,7 +965,6 @@ FILE *fdopen_injected(int fd, const char *mode) {
   fp->_cookie = fp;
   return (fp);
 }
-
 
 /*
  * Re-direct an existing, open (probably) file to some other file.

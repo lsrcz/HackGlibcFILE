@@ -9,7 +9,15 @@
 extern "C" {
 #endif
 
+#ifndef __APPLE__
 #define _GNU_SOURCE
+#define _IO_MTSAFE_IO
+typedef struct {
+    int lock;
+    int cnt;
+    void *owner;
+} _IO_lock_t;
+#endif
 #include <stdio.h>
 #include <sys/param.h>
 
@@ -53,21 +61,21 @@ typedef int (*_IO_showmanyc_t)(FILE *);
 
 typedef void (*_IO_imbue_t)(FILE *, void *);
 
-ssize_t original_read(FILE *file, void *buf, ssize_t size);
-
-ssize_t original_write(FILE *file, const void *buf, ssize_t size);
-
-off64_t original_seek(FILE *file, off64_t offset, int whence);
-
-int original_close(FILE *file);
-
-int original_stat(FILE *file, void *buf);
-
 void inject_stat(_IO_stat_t func);
 
-#else
+#endif
 
 typedef int (*_unix_close_t)(int fd);
+
+#ifndef __APPLE__
+
+typedef ssize_t (*_unix_read_t)(int fd, void *buf, ssize_t size);
+
+typedef off64_t (*_unix_seek_t)(int fd, off64_t offset, int whence);
+
+typedef ssize_t (*_unix_write_t)(int fd, const void *buf, ssize_t size);
+
+#else
 
 typedef ssize_t (*_unix_read_t)(int fd, void *buf, size_t size);
 
@@ -75,13 +83,13 @@ typedef fpos_t (*_unix_seek_t)(int fd, fpos_t offset, int whence);
 
 typedef ssize_t (*_unix_write_t)(int fd, const void *buf, size_t size);
 
+#endif
+
 typedef int (*_unix_open_t)(const char *buf, int oflag, ...);
 
 typedef int (*_unix_fcntl_t)(int fd, int flag, ...);
 
 typedef int (*_unix_dup2_t)(int fd1, int fd2);
-
-#endif
 
 void inject_read(_unix_read_t func);
 
