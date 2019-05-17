@@ -806,23 +806,6 @@ extern int _sread(FILE *, char *, int);
 extern int _swrite(FILE *, const char *, int);
 extern int _sseek(FILE *, fpos_t, int);
 
-int _read_vfunc(void *cookie, char *buf, int n) {
-  FILE *fp = cookie;
-  return (_saved_read(fp->_file, buf, (size_t)n));
-}
-
-int _write_vfunc(void *cookie, const char *buf, int n) {
-  FILE *fp = cookie;
-  return (_saved_write(fp->_file, buf, (size_t)n));
-}
-
-fpos_t _seek_vfunc(void *cookie, fpos_t offset, int whence) {
-  FILE *fp = cookie;
-  return (_saved_seek(fp->_file, (off_t)offset, whence));
-}
-
-int _close_vfunc(void *cookie) { return _saved_close(((FILE *)cookie)->_file); }
-
 FILE *_stdfiles[3];
 
 void __attribute__((constructor)) _initstdfile() {
